@@ -3,19 +3,20 @@ the underlying install is even usable yet."""
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from app.config import LEROBOT_PYTHON, LEROBOT_REPO, LEROBOT_VENV_BIN
+from app.config import EXE_SUFFIX, LEROBOT_PYTHON, LEROBOT_REPO, LEROBOT_VENV_BIN
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
-INSTALL_SCRIPT = BACKEND_DIR / "scripts" / "install_lerobot.sh"
+INSTALL_SCRIPT = BACKEND_DIR / "scripts" / "install_lerobot.py"
 
 
 def _console_script(name: str) -> list[str]:
     """Prefer the installed console script (`lerobot-calibrate`), fall back to
     `python -m lerobot.scripts...` so this still works right after a fresh `pip install -e`
     before the venv's bin dir is fully populated on some platforms."""
-    exe = LEROBOT_VENV_BIN / name
+    exe = LEROBOT_VENV_BIN / f"{name}{EXE_SUFFIX}"
     if exe.exists():
         return [str(exe)]
     module = "lerobot.scripts." + name.replace("-", "_")
@@ -23,7 +24,8 @@ def _console_script(name: str) -> list[str]:
 
 
 def install_argv() -> list[str]:
-    return ["bash", str(INSTALL_SCRIPT), str(LEROBOT_REPO)]
+    # Run with the backend's own interpreter so the installer works without bash (Windows).
+    return [sys.executable, str(INSTALL_SCRIPT), str(LEROBOT_REPO)]
 
 
 def calibrate_argv(device_kind: str, robot_type: str, port: str, device_id: str) -> list[str]:

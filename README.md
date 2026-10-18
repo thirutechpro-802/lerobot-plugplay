@@ -22,7 +22,11 @@ brew install git python node
 ```
 
 **Windows:** install [Git](https://git-scm.com/downloads), [Python](https://www.python.org/downloads/)
-(3.10+), and [Node.js LTS](https://nodejs.org/) from their official installers.
+(3.10+, tick **"Add python.exe to PATH"**), and [Node.js LTS](https://nodejs.org/) from their official
+installers — or in one go from a terminal:
+```powershell
+winget install Git.Git Python.Python.3.12 OpenJS.NodeJS.LTS
+```
 
 **Any OS, no sudo/admin needed:** use [nvm](https://github.com/nvm-sh/nvm) for Node.js:
 ```bash
@@ -38,7 +42,8 @@ Check everything is on `PATH`: `git --version && python3 --version && node -v &&
 ```bash
 git clone https://github.com/gowrishankar12757-sudo/lerobot-plugplay.git
 cd lerobot-plugplay
-./start.sh
+./start.sh        # Linux / macOS
+start.bat         # Windows (or double-click start.bat in Explorer)
 ```
 
 Open **http://127.0.0.1:5173**
@@ -55,6 +60,9 @@ Open **http://127.0.0.1:5173**
 
 - **Linux "Permission denied" on the USB port?** Run `sudo usermod -aG dialout $USER`, then log out and
   back in.
+- **Windows: arm doesn't show up?** It should appear as a `COM` port. If it doesn't, install the USB-serial
+  driver for your motor bus board (usually CH340 or CP210x) and re-plug it. Close any other program
+  (Feetech FD software, Arduino IDE, etc.) that has the COM port open.
 - **Missing ffmpeg / git-lfs?** The Install block will flag it — only needed later for recording data.
 
 ## License

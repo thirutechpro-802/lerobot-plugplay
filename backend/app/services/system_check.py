@@ -5,7 +5,11 @@ from __future__ import annotations
 import shutil
 import subprocess
 
-from app.config import LEROBOT_PYTHON, LEROBOT_REPO, LEROBOT_VENV_BIN
+from app.config import EXE_SUFFIX, IS_WINDOWS, LEROBOT_PYTHON, LEROBOT_REPO, LEROBOT_VENV_BIN
+
+
+def _install_hint(apt_pkg: str, winget_id: str) -> str:
+    return f"winget install {winget_id}" if IS_WINDOWS else f"sudo apt install {apt_pkg}"
 
 
 def _check(id_: str, label: str, ok: bool, fix: str | None = None, optional: bool = False) -> dict:
@@ -28,7 +32,7 @@ def run_checks() -> list[dict]:
     )
 
     git_ok = shutil.which("git") is not None
-    checks.append(_check("git", "git installed", git_ok, "Install git (e.g. 'sudo apt install git')"))
+    checks.append(_check("git", "git installed", git_ok, f"Install git (e.g. '{_install_hint('git', 'Git.Git')}')"))
 
     ffmpeg_ok = shutil.which("ffmpeg") is not None
     checks.append(
@@ -36,7 +40,7 @@ def run_checks() -> list[dict]:
             "ffmpeg",
             "ffmpeg installed (optional — only for recording camera datasets, not calibration/teleoperation)",
             ffmpeg_ok,
-            "sudo apt install ffmpeg",
+            _install_hint("ffmpeg", "Gyan.FFmpeg"),
             optional=True,
         )
     )
@@ -47,7 +51,7 @@ def run_checks() -> list[dict]:
             "git-lfs",
             "git-lfs installed (optional — only for recording/sharing datasets, not calibration/teleoperation)",
             lfs_ok,
-            "sudo apt install git-lfs",
+            _install_hint("git-lfs", "GitHub.GitLFS"),
             optional=True,
         )
     )
@@ -72,7 +76,7 @@ def run_checks() -> list[dict]:
         )
     )
 
-    scripts_ok = (LEROBOT_VENV_BIN / "lerobot-calibrate").exists() or (LEROBOT_VENV_BIN / "lerobot-teleoperate").exists()
+    scripts_ok = any((LEROBOT_VENV_BIN / f"{n}{EXE_SUFFIX}").exists() for n in ("lerobot-calibrate", "lerobot-teleoperate"))
     checks.append(
         _check("cli", "lerobot-calibrate / lerobot-teleoperate CLI available", scripts_ok, "Run the Install block")
     )

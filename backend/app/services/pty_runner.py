@@ -1,20 +1,33 @@
 """Runs a command inside a real pty so interactive LeRobot CLIs (which use input(),
 live cursor-redraw tables, and Ctrl+C) behave exactly as they would in a terminal, and
-broadcasts the raw bytes to any number of connected websocket viewers."""
+broadcasts the raw bytes to any number of connected websocket viewers.
+
+POSIX uses the stdlib pty module; Windows uses ConPTY via pywinpty."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import os
-import pty
-import struct
-import termios
+import signal
+import subprocess
+import sys
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+IS_WINDOWS = sys.platform == "win32"
+
+if IS_WINDOWS:
+    from winpty import PtyProcess
+else:
+    import fcntl
+    import pty
+    import struct
+    import termios
 
 SCROLLBACK_LIMIT = 400_000  # bytes kept for late-joining viewers
 
@@ -30,6 +43,7 @@ class RunHandle:
     created_at: float = field(default_factory=time.time)
     master_fd: int | None = None
     pid: int | None = None
+    win_proc: Any = None  # winpty.PtyProcess on Windows
     _buffer: bytearray = field(default_factory=bytearray)
     _subscribers: set[asyncio.Queue] = field(default_factory=set)
     _done_event: asyncio.Event = field(default_factory=asyncio.Event)
@@ -74,14 +88,46 @@ class PtyRunRegistry:
 
     async def start(self, kind: str, argv: list[str], cwd: Path, env: dict | None = None) -> RunHandle:
         run_id = uuid.uuid4().hex[:12]
-        master_fd, slave_fd = pty.openpty()
-        _set_winsize(master_fd, rows=32, cols=120)
 
         full_env = os.environ.copy()
         full_env["TERM"] = "xterm-256color"
         full_env["PYTHONUNBUFFERED"] = "1"
+        full_env["PYTHONIOENCODING"] = "utf-8"
         if env:
             full_env.update(env)
+
+        if IS_WINDOWS:
+            handle = self._start_windows(run_id, kind, argv, cwd, full_env)
+        else:
+            handle = await self._start_posix(run_id, kind, argv, cwd, full_env)
+        self._runs[run_id] = handle
+        return handle
+
+    def _start_windows(self, run_id: str, kind: str, argv: list[str], cwd: Path, full_env: dict) -> RunHandle:
+        proc = PtyProcess.spawn(argv, cwd=str(cwd), env=full_env, dimensions=(32, 120))
+        handle = RunHandle(id=run_id, kind=kind, argv=argv, cwd=str(cwd), pid=proc.pid, win_proc=proc)
+        loop = asyncio.get_running_loop()
+
+        # pywinpty only offers blocking reads, so pump output from a thread back into the loop.
+        def _reader() -> None:
+            while True:
+                try:
+                    data = proc.read(65536)
+                except (EOFError, OSError):
+                    break
+                if data:
+                    loop.call_soon_threadsafe(handle._feed, data.encode("utf-8", errors="replace"))
+            while proc.isalive():
+                time.sleep(0.05)
+            returncode = proc.exitstatus
+            loop.call_soon_threadsafe(handle._finish, "exited" if returncode == 0 else "failed", returncode)
+
+        threading.Thread(target=_reader, daemon=True).start()
+        return handle
+
+    async def _start_posix(self, run_id: str, kind: str, argv: list[str], cwd: Path, full_env: dict) -> RunHandle:
+        master_fd, slave_fd = pty.openpty()
+        _set_winsize(master_fd, rows=32, cols=120)
 
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -95,7 +141,6 @@ class PtyRunRegistry:
         os.close(slave_fd)
 
         handle = RunHandle(id=run_id, kind=kind, argv=argv, cwd=str(cwd), master_fd=master_fd, pid=proc.pid)
-        self._runs[run_id] = handle
 
         loop = asyncio.get_running_loop()
         os.set_blocking(master_fd, False)
@@ -132,7 +177,13 @@ class PtyRunRegistry:
 
     def write(self, run_id: str, data: bytes) -> bool:
         handle = self.get(run_id)
-        if handle is None or handle.master_fd is None or handle.status != "running":
+        if handle is None or handle.status != "running":
+            return False
+        if handle.win_proc is not None:
+            with contextlib.suppress(EOFError, OSError):
+                handle.win_proc.write(data.decode("utf-8", errors="replace"))
+            return True
+        if handle.master_fd is None:
             return False
         with contextlib.suppress(OSError):
             os.write(handle.master_fd, data)
@@ -140,7 +191,13 @@ class PtyRunRegistry:
 
     def resize(self, run_id: str, rows: int, cols: int) -> None:
         handle = self.get(run_id)
-        if handle is None or handle.master_fd is None:
+        if handle is None:
+            return
+        if handle.win_proc is not None:
+            with contextlib.suppress(Exception):
+                handle.win_proc.setwinsize(rows, cols)
+            return
+        if handle.master_fd is None:
             return
         with contextlib.suppress(OSError):
             _set_winsize(handle.master_fd, rows, cols)
@@ -149,7 +206,20 @@ class PtyRunRegistry:
         handle = self.get(run_id)
         if handle is None or handle.status != "running" or handle.pid is None:
             return False
-        import signal
+
+        if handle.win_proc is not None:
+            if force:
+                # Kill the whole tree (console scripts spawn a child python.exe).
+                subprocess.run(
+                    ["taskkill", "/T", "/F", "/PID", str(handle.pid)],
+                    capture_output=True,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            else:
+                # Ctrl+C typed into the console raises KeyboardInterrupt, same as SIGINT on POSIX.
+                with contextlib.suppress(EOFError, OSError):
+                    handle.win_proc.sendintr()
+            return True
 
         sig = signal.SIGKILL if force else signal.SIGINT
         with contextlib.suppress(ProcessLookupError):
